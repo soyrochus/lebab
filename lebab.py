@@ -2,10 +2,10 @@
 import json
 import sys
 import os
-from docx import Document
+from docx import Document #type: ignore
 from openai import OpenAI
-from dataclasses import dataclass, field
-from typing import List
+from dataclasses import dataclass, field, fields
+from typing import Any, Dict, List, Type
 from dataclasses import is_dataclass, asdict
 
 
@@ -30,19 +30,28 @@ class Content:
     tables: List[Table] = field(default_factory=list) 
     sections: List[Section] = field(default_factory=list)
     
+def deserialize_from_json(json_str: str) -> Content:
+    json_dict = json.loads(json_str)
     
-def serialize_dataclass(obj):
+    # Deserialize tables
+    tables = []
+    for table_dict in json_dict.get("tables", []):
+        rows = [Row(cells=row_dict.get("cells", [])) for row_dict in table_dict.get("rows", [])]
+        tables.append(Table(rows=rows))
+    
+    # Deserialize sections (if necessary, depending on your JSON structure)
+    sections = [Section(header=sec_dict.get("header", []), footer=sec_dict.get("footer", [])) for sec_dict in json_dict.get("sections", [])]
+
+    return Content(paragraphs=json_dict.get("paragraphs", []), tables=tables, sections=sections)
+
+
+def serialize_dataclass(obj:Any)-> Dict[str, Any]:
     if is_dataclass(obj):
         return asdict(obj)
     raise TypeError("Object of type '%s' is not JSON serializable" % type(obj).__name__)
-    
-def translate_data_structure(content, source_lang, target_lang):
-    
-    #turn dictionary into json
-    json_content = json.dumps(content, default=serialize_dataclass) #json.dumps(content)
-    
-    return json_content
-    
+
+def translate_json(json_content: str, source_lang: str, target_lang:str)-> str:
+        
     # Constructing the prompt for translation
     translation_prompt = f"""Translate the following json structure from {source_lang} to {target_lang}: {json_content}
 
@@ -61,14 +70,25 @@ returned structure will be marshalled to Python.
         {"role": "user", "content": translation_prompt}
     ])
     
-    translate_json = completion.choices[0].message.content
-    translated_content = json.loads(translate_json)
+    translated_json = completion.choices[0].text #type: ignore
+    if translate_json is None:
+        raise Exception("No translation returned")
+    return translated_json 
+
+def translate_data_structure(content: Content, source_lang: str, target_lang:str)-> Content:
+    
+    #turn dictionary into json
+    json_content = json.dumps(content, default=serialize_dataclass) 
+    print(json_content)
+
+    translate_json = '{"paragraphs": ["Este es un texto para ser traducido al español", "Esta no es la imagen correcta"], "tables": [{"rows": [{"cells": [["Esta es la primera celda"], ["Los vikingos no eran llamados así"]]}, {"cells": [["¿Qué es lo que quieres?"], ["Congelado en el tiempo"]]}]}], "sections": []}'
+    #translate_json = translate_json(json_content, source_lang, target_lang)
+
+    print(translate_json)
+    translated_content = deserialize_from_json(translate_json)  # type: ignore
     return translated_content
 
-def _mock_translate_data_structure(content, source_lang, target_lang):
-    return {'paragraphs': ['Este es un texto para ser traducido al español', 'Esta no es la imagen correcta']}
-
-def get_content(doc):
+def get_content(doc: Document):
     content = Content()
     for paragraph in doc.paragraphs:
         if text := paragraph.text.strip():
@@ -81,13 +101,40 @@ def get_content(doc):
         for row in table.rows:
             _row = Row(); _table.rows.append(_row)
             for cell in row.cells:
-                _cell = []; _row.cells.append(_cell)
+                _cell = []; _row.cells.append(_cell) # type: ignore
                 for paragraph in cell.paragraphs:
                     if text := paragraph.text.strip():
                         _cell.append(text)
         
     return content
-    
+
+def set_content(doc: Document, content):
+    #take a list new_doc.paragraphs and overwrite each element with text (and NOT the list itself) with 
+    #the "paragraphs" item from the translated_content dictionary
+   
+    p_i=0
+    for paragraph in doc.paragraphs:
+        if text := paragraph.text.strip():
+            paragraph.text = content.paragraphs[p_i]
+            p_i += 1
+            
+    # overwrite the text in the tables
+    t_i= 0
+    for table in doc.tables:
+        r_i = 0
+        for row in table.rows:
+            c_i = 0
+            for cell in row.cells:
+                p_i=0
+                for paragraph in cell.paragraphs:
+                    if text := paragraph.text.strip():
+                        paragraph.text = content.tables[t_i].rows[r_i].cells[c_i][p_i]
+                        p_i += 1
+                c_i += 1
+            r_i += 1
+        t_i += 1
+        
+            
 def lebab(file_path, source_lang, target_lang):
     # Copy the file to a new file with the specified format
     new_file_path = f"{os.path.splitext(file_path)[0]}_{target_lang}.docx"
@@ -102,16 +149,9 @@ def lebab(file_path, source_lang, target_lang):
 
     print(content)
     translated_content = translate_data_structure(content, source_lang, target_lang)
-    translated_content = _mock_translate_data_structure(content, source_lang, target_lang)
     print(translated_content)
-    
-    #take a list new_doc.paragraphs and overwrite each element with text (and NOT the list itself) with 
-    #the "paragraphs" item from the translated_content dictionary
-    i = 0
-    for paragraph in new_doc.paragraphs:
-        if text := paragraph.text.strip():
-            paragraph.text = translated_content["paragraphs"][i]
-            i += 1
+  
+    set_content(new_doc, translated_content)
     
     # Save the new file
     new_doc.save(new_file_path)
