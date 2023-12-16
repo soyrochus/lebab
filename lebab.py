@@ -4,31 +4,45 @@ import sys
 import os
 from docx import Document
 from openai import OpenAI
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
+from dataclasses import is_dataclass, asdict
+
 
 Paragraphs = List[str]
 
 @dataclass
 class Section:
-    header: Paragraphs
-    footer: Paragraphs
+    header: Paragraphs = field(default_factory=list)
+    footer: Paragraphs = field(default_factory=list)
 
 @dataclass
+class Row:
+    cells: List[Paragraphs] = field(default_factory=list) 
+    
+@dataclass
 class Table:
-    rows: List[Paragraphs]
+    rows: List[Row] = field(default_factory=list)
     
 @dataclass
 class Content:
-    paragraphs: Paragraphs
-    tables: List[List[str]]
-    sections: Section
+    paragraphs: Paragraphs = field(default_factory=list)
+    tables: List[Table] = field(default_factory=list) 
+    sections: List[Section] = field(default_factory=list)
     
-
+    
+def serialize_dataclass(obj):
+    if is_dataclass(obj):
+        return asdict(obj)
+    raise TypeError("Object of type '%s' is not JSON serializable" % type(obj).__name__)
+    
 def translate_data_structure(content, source_lang, target_lang):
     
     #turn dictionary into json
-    json_content = json.dumps(content)
+    json_content = json.dumps(content, default=serialize_dataclass) #json.dumps(content)
+    
+    return json_content
+    
     # Constructing the prompt for translation
     translation_prompt = f"""Translate the following json structure from {source_lang} to {target_lang}: {json_content}
 
@@ -54,26 +68,40 @@ returned structure will be marshalled to Python.
 def _mock_translate_data_structure(content, source_lang, target_lang):
     return {'paragraphs': ['Este es un texto para ser traducido al español', 'Esta no es la imagen correcta']}
 
+def get_content(doc):
+    content = Content()
+    for paragraph in doc.paragraphs:
+        if text := paragraph.text.strip():
+            content.paragraphs.append(text)
+            
+    # Extract text from tables
+    for table in doc.tables:
+        
+        _table = Table(); content.tables.append(_table)
+        for row in table.rows:
+            _row = Row(); _table.rows.append(_row)
+            for cell in row.cells:
+                _cell = []; _row.cells.append(_cell)
+                for paragraph in cell.paragraphs:
+                    if text := paragraph.text.strip():
+                        _cell.append(text)
+        
+    return content
+    
 def lebab(file_path, source_lang, target_lang):
     # Copy the file to a new file with the specified format
     new_file_path = f"{os.path.splitext(file_path)[0]}_{target_lang}.docx"
     doc = Document(file_path)
+   
     doc.save(new_file_path)
 
     # Access the new file
     new_doc = Document(new_file_path)
 
-    
+    content = get_content(new_doc)
 
-  
-    
-    # Iterate and translate text elements
-    for paragraph in new_doc.paragraphs:
-        if text := paragraph.text.strip():
-            content["paragraphs"].append(text)
-           
     print(content)
-    #translated_content = translate_data_structure(content, source_lang, target_lang)
+    translated_content = translate_data_structure(content, source_lang, target_lang)
     translated_content = _mock_translate_data_structure(content, source_lang, target_lang)
     print(translated_content)
     
