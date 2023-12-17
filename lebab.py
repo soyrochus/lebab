@@ -15,15 +15,18 @@ The text  consists of text elements seperated by the following seperator: {SEPER
 Leave the seperator in place, and translate the text elements in between the seperators.
 Don't change the seperator itself. Dont'a add anything to the text elements, or remove anything from them.
 
-The text follows below:
+Translate all of the text below until the (END OF TEXT) marker.):
 
 {content}
+
+(END OF TEXT)
 """ 
 
     client = OpenAI()
     completion = client.chat.completions.create(
     #model="gpt-4",
-    model="gpt-4-1106-preview",
+    #model="gpt-4-1106-preview",
+    model="gpt-4-32k",
     messages=[
         {"role": "system", "content": "You are a profesional translator of many different languages. Your skill is the ability to strike a good ballance between semantic and communicative translation"},
         {"role": "user", "content": translation_prompt}
@@ -62,6 +65,9 @@ def set_content(doc: Document, content:str):
         if text := paragraph.text.strip():
             paragraph.text = content_items[p_i]
             p_i += 1
+            if p_i >= len(content_items):
+                print("Warning: less transalated content items then expected")
+                return
             
     # overwrite the text in the tables
     for table in doc.tables:
@@ -71,6 +77,9 @@ def set_content(doc: Document, content:str):
                     if text := paragraph.text.strip():
                         paragraph.text = content_items[p_i]
                         p_i += 1
+                        if p_i >= len(content_items):
+                            print("Warning: less transalated content items then expected")
+                            return 
      
             
 def lebab(file_path, source_lang, target_lang):
@@ -86,9 +95,19 @@ def lebab(file_path, source_lang, target_lang):
     content = get_content(new_doc)
 
     print(content)
+    #write content to a text file
+    with open(f"{os.path.splitext(file_path)[0]}_{source_lang}.txt", "w") as text_file:
+        text_file.write(content)
+    
     translated_content = translate_content(content, source_lang, target_lang)
+    # with open(f"{os.path.splitext(file_path)[0]}_{target_lang}.txt", "r") as text_file:
+    #     translated_content = text_file.read()
+    
     print(translated_content)
-  
+    #write translated_content to a text file
+    with open(f"{os.path.splitext(file_path)[0]}_{target_lang}.txt", "w") as text_file:
+        text_file.write(translated_content)
+      
     set_content(new_doc, translated_content)
     
     # Save the new file
