@@ -8,60 +8,62 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI# Requires langchain>=0.3
 import docx  # python-docx for Word files
 from pptx import Presentation  # python-pptx for PowerPoint files
+import json
+
+load_dotenv()  # load environment variables from .env file
+__DEBUG__ = os.getenv("DEBUG", "false").lower() == "true"
+
 
 # Estimate a maximum character count per translation request.
-# This is a high-level approximation based on ~10K tokens.
 MAX_CHUNK_SIZE = 10000
 
 def init_llm():
     """
     Initialize the LLM using ChatOpenAI.
-    
-    Design rationale:
-    - Encapsulates all OpenAI-specific initialization.
-    - Uses python-dotenv to load the API key.
-    - Allows for later substitution with a different initializer.
     """
-    load_dotenv()  # load environment variables from .env file
+
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
         raise ValueError("OPENAI_API_KEY not found in environment variables")
     
     # Create the ChatOpenAI instance.
-    # Temperature is set to 0 for deterministic translation.
     llm = ChatOpenAI(openai_api_key=openai_api_key, temperature=0, model_name="gpt-3.5-turbo")
     return llm
 
-async def translate_text_async(text, input_lang, output_lang, llm):
+async def translate_blocks_json_async(blocks, input_lang, output_lang, llm):
     """
-    Translate the given text asynchronously using the LLM.
+    Translate a JSON array of blocks asynchronously using the LLM.
     
-    Design rationale:
-    - Constructs a prompt instructing the LLM to translate while preserving formatting.
-    - Uses the async ainvoke method so that the translation call does not block.
+    The function encodes the list of blocks as a JSON string and sends it along with a prompt
+    that instructs the LLM to translate the "text" field for each block from input_lang to output_lang.
+    The LLM is instructed to return a valid JSON array where each object has a new key 'translated_text'.
     """
     prompt = (
-        f"Translate the following text from {input_lang} to {output_lang} "
-        "while preserving formatting and document structure:\n\n" + text
+        f"Translate the following JSON array of objects from {input_lang} to {output_lang}. "
+        "Each object has a 'text' field that must be translated. For each object, add a new key "
+        "'translated_text' containing the translated text. Do not modify any other keys. "
+        "Return only a valid JSON array with no additional commentary or formatting."
     )
+    
+    json_data = json.dumps(blocks, ensure_ascii=False)
+    full_message = f"{prompt}\n\nJSON Input:\n{json_data}"
+    
     try:
-        # Using ainvoke (async call) with a simple message structure.
-        response = await llm.ainvoke([{"role": "user", "content": prompt}])
-        # We assume the response object has a 'content' attribute.
-        translated_text = response.content if hasattr(response, "content") else response
-        return translated_text
+        response = await llm.ainvoke([{"role": "user", "content": full_message}])
+        translated_json = response.content if hasattr(response, "content") else response
+        # Parse and return the JSON output.
+        translated_blocks = json.loads(translated_json)
+        return translated_blocks
     except Exception as e:
         print(f"Error during translation: {e}")
-        # On error, return the original text as a fallback.
-        return text
+        # On error, return the original blocks with a fallback.
+        for block in blocks:
+            block["translated_text"] = block.get("text", "")
+        return blocks
 
 class DocumentTranslator:
     """
     Base class for document translators.
-    
-    Design rationale:
-    - Provides a common interface for reading, updating, and writing documents.
-    - Makes it easy to extend support for new formats (e.g., Excel).
     """
     def __init__(self, file_path):
         self.file_path = file_path
@@ -74,20 +76,11 @@ class DocumentTranslator:
         raise NotImplementedError
 
     def update_blocks(self, translated_blocks):
-        """
-        Update the internal document model with the translated text.
-        Must be implemented by subclasses.
-        """
         raise NotImplementedError
 
 class DocxTranslator(DocumentTranslator):
     """
-    Translator for Word (.docx) documents using python-docx.
-    
-    Design rationale:
-    - Iterates over paragraphs as blocks.
-    - Keeps track of block indices so that after translation,
-      we can replace the original text accurately.
+    Translator for Word (.docx) documents.
     """
     def __init__(self, file_path):
         super().__init__(file_path)
@@ -97,14 +90,12 @@ class DocxTranslator(DocumentTranslator):
         try:
             self.doc = docx.Document(self.file_path)
             self.blocks = []
-            # Extract each paragraph as a separate block.
             for i, para in enumerate(self.doc.paragraphs):
                 self.blocks.append({"type": "paragraph", "index": i, "text": para.text})
         except Exception as e:
             print(f"Error reading DOCX file: {e}")
 
     def update_blocks(self, translated_blocks):
-        # Replace paragraph texts with their translated versions.
         for block in translated_blocks:
             if block["type"] == "paragraph":
                 try:
@@ -120,11 +111,7 @@ class DocxTranslator(DocumentTranslator):
 
 class PptxTranslator(DocumentTranslator):
     """
-    Translator for PowerPoint (.pptx) presentations using python-pptx.
-    
-    Design rationale:
-    - Iterates over slides and text-containing shapes.
-    - Stores slide and shape indices to accurately replace text after translation.
+    Translator for PowerPoint (.pptx) presentations.
     """
     def __init__(self, file_path):
         super().__init__(file_path)
@@ -134,7 +121,6 @@ class PptxTranslator(DocumentTranslator):
         try:
             self.prs = Presentation(self.file_path)
             self.blocks = []
-            # Iterate through slides and shapes that contain text.
             for slide_index, slide in enumerate(self.prs.slides):
                 for shape_index, shape in enumerate(slide.shapes):
                     if hasattr(shape, "text") and shape.text:
@@ -148,7 +134,6 @@ class PptxTranslator(DocumentTranslator):
             print(f"Error reading PPTX file: {e}")
 
     def update_blocks(self, translated_blocks):
-        # Update each shape with the translated text.
         for block in translated_blocks:
             if block["type"] == "shape":
                 try:
@@ -166,14 +151,10 @@ class PptxTranslator(DocumentTranslator):
 
 async def process_translation(translator, input_lang, output_lang, llm):
     """
-    Process the translation of document blocks in manageable chunks.
+    Process the translation of document blocks in manageable chunks using a JSON-based approach.
     
-    Design rationale:
-    - Groups text blocks until a maximum estimated character size is reached.
-    - Uses a delimiter ("---") to join blocks so that after translation,
-      we can split the translated text back into individual blocks.
-    - Ensures that blocks are never split, preserving document structure.
-    - Catches errors during translation and proceeds with the rest.
+    Blocks are accumulated until a maximum estimated character size is reached, then sent as a JSON array.
+    The translated JSON array is parsed and merged back into the document model.
     """
     translator.read_document()
     if not translator.blocks:
@@ -187,19 +168,10 @@ async def process_translation(translator, input_lang, output_lang, llm):
     for block in translator.blocks:
         block_text = block["text"]
         block_size = len(block_text)
-        # If adding this block would exceed the max size, translate the current chunk.
         if current_chunk and (current_chunk_size + block_size > MAX_CHUNK_SIZE):
-            chunk_text = "\n---\n".join(b["text"] for b in current_chunk)
-            translated_chunk = await translate_text_async(chunk_text, input_lang, output_lang, llm)
-            # Split by the delimiter to map back to each block.
-            translated_parts = translated_chunk.split("\n---\n")
-            if len(translated_parts) != len(current_chunk):
-                print("Warning: Mismatch in block count after translation. Some blocks may be left unmodified.")
-                for i, b in enumerate(current_chunk):
-                    b["translated_text"] = translated_parts[i] if i < len(translated_parts) else b["text"]
-            else:
-                for b, t in zip(current_chunk, translated_parts):
-                    b["translated_text"] = t
+            translated_chunk = await translate_blocks_json_async(current_chunk, input_lang, output_lang, llm)
+            for orig, trans in zip(current_chunk, translated_chunk):
+                orig["translated_text"] = trans.get("translated_text", orig["text"])
             translated_blocks.extend(current_chunk)
             current_chunk = []
             current_chunk_size = 0
@@ -207,29 +179,15 @@ async def process_translation(translator, input_lang, output_lang, llm):
         current_chunk.append(block)
         current_chunk_size += block_size
 
-    # Translate any remaining blocks.
     if current_chunk:
-        chunk_text = "\n---\n".join(b["text"] for b in current_chunk)
-        translated_chunk = await translate_text_async(chunk_text, input_lang, output_lang, llm)
-        translated_parts = translated_chunk.split("\n---\n")
-        if len(translated_parts) != len(current_chunk):
-            print("Warning: Mismatch in block count after translation. Some blocks may be left unmodified.")
-            for i, b in enumerate(current_chunk):
-                b["translated_text"] = translated_parts[i] if i < len(translated_parts) else b["text"]
-        else:
-            for b, t in zip(current_chunk, translated_parts):
-                b["translated_text"] = t
+        translated_chunk = await translate_blocks_json_async(current_chunk, input_lang, output_lang, llm)
+        for orig, trans in zip(current_chunk, translated_chunk):
+            orig["translated_text"] = trans.get("translated_text", orig["text"])
         translated_blocks.extend(current_chunk)
 
-    # Update the document model with the translated text.
     translator.update_blocks(translated_blocks)
 
 def construct_target_filename(input_file, output_lang):
-    """
-    Construct a target filename by appending the output language code.
-    
-    Example: 'MyText.docx' becomes 'MyText_EN.docx' for output_lang='EN'.
-    """
     base, ext = os.path.splitext(input_file)
     return f"{base}_{output_lang}{ext}"
 
@@ -244,7 +202,6 @@ async def main():
     input_file = args.input_file
     target_file = args.to_file if args.to_file else construct_target_filename(input_file, args.output_lang)
 
-    # Step 1: Create a temporary copy of the file.
     try:
         temp_dir = tempfile.gettempdir()
         temp_file = os.path.join(temp_dir, os.path.basename(input_file))
@@ -254,7 +211,6 @@ async def main():
         print(f"Error creating temporary file: {e}")
         return
 
-    # Select the appropriate translator based on file extension.
     ext = os.path.splitext(input_file)[1].lower()
     if ext == ".docx":
         translator = DocxTranslator(temp_file)
@@ -264,17 +220,13 @@ async def main():
         print("Unsupported file format. Only .docx and .pptx are supported.")
         return
 
-    # Step 2: Initialize the LLM.
     try:
         llm = init_llm()
     except Exception as e:
         print(f"Error initializing LLM: {e}")
         return
 
-    # Step 3: Process translation (chunked to avoid excessive text per request).
     await process_translation(translator, args.input_lang, args.output_lang, llm)
-
-    # Step 4: Write out the translated document.
     translator.write_document(target_file)
     print(f"Translated document saved to {target_file}")
 
