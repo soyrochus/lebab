@@ -1,20 +1,16 @@
-[tool.poetry]
+[project]
 name = "lebab"
-version = "0.1.0"
-description = "Word docx translator, from one language to another"
+version = "0.4.0"
+description = "Document translator - Word and Powerpoint - from one language to another, respecting the document structure"
 authors = ["Iwan van der Kleijn <iwanvanderkleijn@gmail.com>"]
 license = "MIT"
 readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "langchain>=0.3.19",
+    "langchain-openai>=0.3.7",
+    "python-docx>=1.1.2",
+    "python-dotenv>=1.0.1",
+    "python-pptx>=1.0.2",
+]
 
-[tool.poetry.dependencies]
-python = "^3.11"
-openai = "^1.4.0"
-python-docx = "^1.1.0"
-
-
-[tool.poetry.group.dev.dependencies]
-mypy = "^1.7.1"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
